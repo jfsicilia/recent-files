@@ -48,34 +48,34 @@ chmod +x recent_files.sh
 
 While the file selection menu is open, you can type:
 
-| Command | Effect |
-|---------|--------|
+| Command     | Effect                                         |
+| ----------- | ---------------------------------------------- |
 | `#<period>` | Change time window (e.g. `#3d`, `#1w`, `#30m`) |
-| `^<depth>` | Change search depth (e.g. `^3`, `^10`) |
+| `^<depth>`  | Change search depth (e.g. `^3`, `^10`)         |
 
 ### Actions
 
 After selecting files, choose an action with a single keypress:
 
-| Key | Action |
-|-----|--------|
+| Key | Action                        |
+| --- | ----------------------------- |
 | `o` | Open with default application |
-| `m` | Move to an existing folder |
-| `c` | Copy to an existing folder |
-| `M` | Move to a new folder |
-| `C` | Copy to a new folder |
-| `d` | Delete (with confirmation) |
+| `m` | Move to an existing folder    |
+| `c` | Copy to an existing folder    |
+| `M` | Move to a new folder          |
+| `C` | Copy to a new folder          |
+| `d` | Delete (with confirmation)    |
 
 ## Configuration
 
 Edit the variables at the top of `recent_files.sh`:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PERIOD` | `1d` | Time window for file discovery |
-| `MAX_DEPTH` | `5` | Maximum directory depth for searches |
-| `ROFI_ARGS` | `()` | Extra arguments passed to every rofi call |
-| `EXCLUDE_DIRS` | `mnt .cache .venv` | Directories excluded from all searches |
+| Variable       | Default            | Description                               |
+| -------------- | ------------------ | ----------------------------------------- |
+| `PERIOD`       | `1d`               | Time window for file discovery            |
+| `MAX_DEPTH`    | `5`                | Maximum directory depth for searches      |
+| `ROFI_ARGS`    | `()`               | Extra arguments passed to every rofi call |
+| `EXCLUDE_DIRS` | `mnt .cache .venv` | Directories excluded from all searches    |
 
 ## Hotkey integration
 
@@ -83,7 +83,8 @@ The script is designed to be launched from hotkey managers like [kanata](https:/
 
 ```lisp
 (defcfg process-unmapped-keys yes)
-(deflayer default
-  (tap-hold 200 200 f (cmd /path/to/recent_files.sh))
+(defsrc)
+(deflayermap (base-layer)
+  caps (cmd /path/to/recent_files.sh)
 )
 ```
