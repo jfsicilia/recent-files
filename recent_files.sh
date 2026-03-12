@@ -59,8 +59,8 @@ notify() {
 list_folders() {
     fd --max-depth "$MAX_DEPTH" --type d --type l . "${FD_EXCLUDE[@]}" ~ |
         awk '{print gsub("/","/")" "$0}' | # prefix each line with its depth (slash count)
-        sort -n |                           # sort by depth ascending
-        cut -d' ' -f2-                      # strip the depth prefix
+        sort -n |                          # sort by depth ascending
+        cut -d' ' -f2-                     # strip the depth prefix
 }
 
 # period_to_seconds — Convert a human-readable period string to seconds.
@@ -135,22 +135,23 @@ transfer_files() {
                 # Reuse previously selected "all" policy
                 choice="$collision_policy"
             else
-                choice=$(printf 'overwrite\nnew name\nskip\noverwrite all\nnew name all\nskip all' |
-                    rofi_menu "'$basename' already exists")
+                choice=$(printf 'o. overwrite\nn. new name\ns. skip\nO. Overwrite All\nN. New Name All\nS. Skip All' |
+                    rofi_menu "'$basename' already exists" -matching prefix -auto-select)
+                choice="${choice#*. }" # strip letter prefix
             fi
 
             # If an "all" variant was chosen, store the policy and normalize
             # the choice to its single-file equivalent
             case "$choice" in
-            "overwrite all")
+            "Overwrite All")
                 collision_policy="overwrite all"
                 choice="overwrite"
                 ;;
-            "new name all")
+            "New Name All")
                 collision_policy="new name all"
                 choice="new name"
                 ;;
-            "skip all")
+            "Skip All")
                 collision_policy="skip all"
                 choice="skip"
                 ;;
@@ -215,8 +216,8 @@ while true; do
     selected=$(
         recent_files "$PERIOD" |
             xargs -d '\n' stat --format='%Y %n' | # prefix each path with mtime epoch
-            sort -rn |                             # sort newest first
-            cut -d' ' -f2- |                       # strip the mtime prefix
+            sort -rn |                            # sort newest first
+            cut -d' ' -f2- |                      # strip the mtime prefix
             rofi_menu "$PERIOD recent files, depth $MAX_DEPTH (#<period> ^<depth>)" -i -multi-select
     )
 
