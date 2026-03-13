@@ -16,10 +16,25 @@ export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNT
 
 # ── Config ───────────────────────────────────────────────────────────────────
 # PERIOD: time window for recent file discovery (fd syntax: e.g. 1d, 12h, 2w).
-#         Passed as first argument or defaults to 1 day.
-PERIOD="${1:-1d}"
+#         Empty string means unbound (no time filter).
+PERIOD="1d"
 # MAX_DEPTH: maximum directory depth for fd searches under $HOME.
+#            Empty string means unbound (no depth limit).
 MAX_DEPTH=5
+
+# Parse CLI arguments: #<period> sets PERIOD, ^<depth> sets MAX_DEPTH.
+# Use # alone for unbound period, ^ alone for unbound depth. Last of each wins.
+for arg in "$@"; do
+    if [[ "$arg" == "#" ]]; then
+        PERIOD=""
+    elif [[ "$arg" =~ ^#[0-9]+[smhdw]$ ]]; then
+        PERIOD="${arg#\#}"
+    elif [[ "$arg" == "^" ]]; then
+        MAX_DEPTH=""
+    elif [[ "$arg" =~ ^\^[0-9]+$ ]]; then
+        MAX_DEPTH="${arg#\^}"
+    fi
+done
 # ROFI_ARGS: extra arguments passed to every rofi invocation.
 ROFI_ARGS=()
 # EXCLUDE_DIRS: directory names to exclude from all fd searches.
@@ -30,6 +45,15 @@ FD_EXCLUDE=()
 for dir in "${EXCLUDE_DIRS[@]}"; do
     FD_EXCLUDE+=(-E "$dir")
 done
+
+# Build fd flags for depth and period limits. Rebuilt whenever PERIOD/MAX_DEPTH change.
+build_fd_flags() {
+    FD_DEPTH=()
+    [[ -n "$MAX_DEPTH" ]] && FD_DEPTH=(--max-depth "$MAX_DEPTH")
+    FD_PERIOD=()
+    [[ -n "$PERIOD" ]] && FD_PERIOD=(--changed-within="$PERIOD")
+}
+build_fd_flags
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -57,7 +81,7 @@ notify() {
 #                depth (shallowest first). Respects MAX_DEPTH and EXCLUDE_DIRS.
 # Output: one directory path per line
 list_folders() {
-    fd --max-depth "$MAX_DEPTH" --type d --type l . "${FD_EXCLUDE[@]}" ~ |
+    fd "${FD_DEPTH[@]}" --type d --type l . "${FD_EXCLUDE[@]}" ~ |
         awk '{print gsub("/","/")" "$0}' | # prefix each line with its depth (slash count)
         sort -n |                          # sort by depth ascending
         cut -d' ' -f2-                     # strip the depth prefix
@@ -85,24 +109,22 @@ period_to_seconds() {
 #     2. fd + stat + awk: finds files by metadata change time (ctime), which
 #        updates on creation, copy, and move even when mtime is preserved.
 #        This second pass is depth-limited for performance.
-#   Results are deduplicated with sort -u.
-# Parameters:
-#   $1 — period string (e.g. "1d", "12h")
+#   Pass 2 is skipped when PERIOD is unbound (empty), since there is no cutoff.
+#   Uses global FD_DEPTH and FD_PERIOD arrays for fd flags.
 # Output: one file path per line (unsorted)
 recent_files() {
-    local period="$1"
-    local cutoff_epoch
-    cutoff_epoch=$(($(date +%s) - $(period_to_seconds "$period")))
-
     {
         # Pass 1: files modified within the period (fast, uses fd's built-in mtime filter)
-        fd --max-depth "$MAX_DEPTH" --changed-within="$period" -tf '.*' "${FD_EXCLUDE[@]}" ~
+        fd "${FD_DEPTH[@]}" "${FD_PERIOD[@]}" -tf '.*' "${FD_EXCLUDE[@]}" ~
         # Pass 2: files with recent ctime (catches copies/moves with preserved old mtime).
-        # Lists all files up to MAX_DEPTH, batches stat calls via xargs, then filters
-        # by ctime >= cutoff using awk.
-        fd --max-depth "$MAX_DEPTH" -tf '.*' "${FD_EXCLUDE[@]}" ~ |
-            xargs -d '\n' stat --format='%Z %n' 2>/dev/null |
-            awk -v cutoff="$cutoff_epoch" '$1 >= cutoff {print substr($0, index($0," ")+1)}'
+        # Skipped when period is unbound since we can't compute a cutoff epoch.
+        if [[ -n "$PERIOD" ]]; then
+            local cutoff_epoch
+            cutoff_epoch=$(($(date +%s) - $(period_to_seconds "$PERIOD")))
+            fd "${FD_DEPTH[@]}" -tf '.*' "${FD_EXCLUDE[@]}" ~ |
+                xargs -d '\n' stat --format='%Z %n' 2>/dev/null |
+                awk -v cutoff="$cutoff_epoch" '$1 >= cutoff {print substr($0, index($0," ")+1)}'
+        fi
     } | sort -u
 }
 
@@ -213,26 +235,39 @@ transfer_files() {
 # Both re-launch the menu with updated parameters.
 
 while true; do
+    period_label="${PERIOD:-all}"
+    depth_label="${MAX_DEPTH:-all}"
+
     selected=$(
-        recent_files "$PERIOD" |
+        recent_files |
             xargs -d '\n' stat --format='%Y %n' | # prefix each path with mtime epoch
             sort -rn |                            # sort newest first
             cut -d' ' -f2- |                      # strip the mtime prefix
-            rofi_menu "$PERIOD recent files, depth $MAX_DEPTH (#<period> ^<depth>)" -i -multi-select
+            rofi_menu "$period_label recent files, depth $depth_label (#<period> ^<depth>)" -i -multi-select
     )
 
     # Empty selection (Escape pressed) — exit
     [[ -z "$selected" ]] && exit 0
 
-    # Check for period change command (e.g. "#2d")
+    # Check for period change command (e.g. "#2d" or "#" for unbound)
     if [[ "$selected" =~ ^#[0-9]+[smhdw]$ ]]; then
         PERIOD="${selected#\#}"
+        build_fd_flags
+        continue
+    elif [[ "$selected" == "#" ]]; then
+        PERIOD=""
+        build_fd_flags
         continue
     fi
 
-    # Check for depth change command (e.g. "^5")
+    # Check for depth change command (e.g. "^5" or "^" for unbound)
     if [[ "$selected" =~ ^\^[0-9]+$ ]]; then
         MAX_DEPTH="${selected#\^}"
+        build_fd_flags
+        continue
+    elif [[ "$selected" == "^" ]]; then
+        MAX_DEPTH=""
+        build_fd_flags
         continue
     fi
 
@@ -268,29 +303,58 @@ while true; do
 
     move | copy)
         file_count=$(echo "$selected" | wc -l)
-        target=$(list_folders | rofi_menu "Select folder to $action $file_count file(s)" -i)
-        [[ -z "$target" ]] && continue
-        [[ ! -d "$target" ]] && notify "Not a valid directory: $target" && continue
+        while true; do
+            depth_label="${MAX_DEPTH:-all}"
+            target=$(list_folders | rofi_menu "Select folder to $action $file_count file(s), depth $depth_label (^<depth>)" -i)
+            [[ -z "$target" ]] && break
 
-        transfer_files "$action" "$target" "$selected"
+            if [[ "$target" =~ ^\^[0-9]+$ ]]; then
+                MAX_DEPTH="${target#\^}"
+                build_fd_flags
+                continue
+            elif [[ "$target" == "^" ]]; then
+                MAX_DEPTH=""
+                build_fd_flags
+                continue
+            fi
+
+            [[ ! -d "$target" ]] && notify "Not a valid directory: $target" && continue
+            transfer_files "$action" "$target" "$selected"
+            break
+        done
+        # If user cancelled folder selection (empty target), go back to action menu
+        [[ -z "$target" ]] && continue
         break
         ;;
 
     "Move to new folder" | "Copy to new folder")
         file_count=$(echo "$selected" | wc -l)
-        op="${action%% *}" # extract "Move" or "Copy"
-        # First, pick the parent directory where the new subfolder will be created
-        parent=$(list_folders | rofi_menu "Create new subfolder and ${op,,} $file_count file(s)" -i)
-        [[ -z "$parent" ]] && continue
-        [[ ! -d "$parent" ]] && notify "Not a valid directory: $parent" && continue
+        op="${action%% *}"
+        while true; do
+            depth_label="${MAX_DEPTH:-all}"
+            parent=$(list_folders | rofi_menu "Create new subfolder and ${op,,} $file_count file(s), depth $depth_label (^<depth>)" -i)
+            [[ -z "$parent" ]] && break
 
-        # Prompt for the new subfolder name via KDE dialog
+            if [[ "$parent" =~ ^\^[0-9]+$ ]]; then
+                MAX_DEPTH="${parent#\^}"
+                build_fd_flags
+                continue
+            elif [[ "$parent" == "^" ]]; then
+                MAX_DEPTH=""
+                build_fd_flags
+                continue
+            fi
+
+            [[ ! -d "$parent" ]] && notify "Not a valid directory: $parent" && continue
+            break
+        done
+        [[ -z "$parent" ]] && continue
+
         folder_name=$(kdialog --inputbox "New folder name in $parent:" "" --title "New Folder")
         [[ $? -ne 0 || -z "$folder_name" ]] && continue
 
         target="$parent$folder_name"
         if mkdir -p "$target"; then
-            op="${action%% *}"
             transfer_files "${op,,}" "$target" "$selected"
         else
             notify "Failed to create: $target"
